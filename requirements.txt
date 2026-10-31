@@ -1,0 +1,3 @@
+astrbot-sdk>=0.1.0
+flask>=3.0
+pywebview>=5.0
