@@ -11,16 +11,25 @@
 
 ## 安装
 
-下载 `AstrBench-v0.1.0-alpha.1-macOS.zip` 并解压
+下载相应版本的 zip 文件并解压
 
 
 ## 开发
 
 ### 环境要求
 
-- macOS 10.15 (Catalina) 或更新版本
 - Python 3.12+
 
 ### 本地运行
 
-暂不支持
+当前为预发布版，暂未提供打包产物，请从源码运行：
+
+```bash
+git clone https://github.com/YuRuiChe/AstrBench.git
+cd AstrBench
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -r requirements.txt
+python launcher.py
+```
