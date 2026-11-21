@@ -23,6 +23,7 @@ import time
 import types
 from pathlib import Path
 
+import base64
 import yaml
 from flask import Flask, jsonify, request, send_from_directory
 import webview
@@ -202,7 +203,6 @@ PLUGINS_DIR = BUNDLED_DIR / "plugins"
 def load_config() -> dict:
     """读取 config.json，与默认值做浅合并，version 强制来自 version.py。"""
     defaults = {
-        "default_plugin": "test_plugin",
         "server": {"host": "127.0.0.1", "port": 5001},
         "log": {"max_lines": 500, "poll_interval_ms": 2000},
     }
@@ -216,10 +216,8 @@ def load_config() -> dict:
             data = {}
 
     merged = {**defaults, **data}
-    # 嵌套字段单独合并，避免用户只改一半时丢失默认值
     merged["server"] = {**defaults["server"], **data.get("server", {})}
     merged["log"] = {**defaults["log"], **data.get("log", {})}
-    # 【关键】版本号只来自 version.py，覆盖 config.json 里可能残留的 version
     merged["version"] = __version__
     merged["config_path"] = str(CONFIG_FILE)
     return merged
@@ -339,12 +337,16 @@ def _rewrite_imports(text: str) -> str:
          "from astrbot_sdk import Star, Context"),
         ("from astrbot.api.star import Context, Star, register",
          "from astrbot_sdk import Star, Context"),
-        ("from astrbot.api.event import filter, AstrMessageEvent",
-         "from astrbot_sdk import MessageEvent\n"
-         "from astrbot_sdk.decorators import on_command, on_message"),
+        # 注意：长模式必须写在前面。
+        # 含 MessageEventResult 的写法更长，若被下面的短模式先匹配，
+        # 尾部的 ", MessageEventResult" 会残留，导致 ImportError。
         ("from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult",
          "from astrbot_sdk import MessageEvent\n"
          "from astrbot_sdk.decorators import on_command, on_message"),
+        ("from astrbot.api.event import filter, AstrMessageEvent",
+         "from astrbot_sdk import MessageEvent\n"
+         "from astrbot_sdk.decorators import on_command, on_message"),
+
 
         # === 不确定的，用内联 stub 替换 ===
         # logger：直接用标准 logging，日志会打到终端 stderr
@@ -372,13 +374,51 @@ def _rewrite_imports(text: str) -> str:
     ]
     for old, new in replacements:
         text = text.replace(old, new)
+    # 兜底
+    text = re.sub(
+        r"from astrbot\.api\.event\s+import\s+[^\n]+",
+        "from astrbot_sdk import MessageEvent\n"
+        "from astrbot_sdk.decorators import on_command, on_message",
+        text,
+    )
+    text = re.sub(
+        r"from astrbot\.api\.star\s+import\s+[^\n]+",
+        "from astrbot_sdk import Star, Context",
+        text,
+    )
     return text
 
 
-def     _rewrite_decorators(text: str) -> str:
-    """替换装饰器、事件类型、yield 返回、@register。"""
-    # @filter.command("x") → @on_command("x")
-    text = re.sub(r'@filter\.command\(([^)]+)\)', r'@on_command(\1)', text)
+def _rewrite_decorators(text: str) -> str:
+    """替换装饰器、事件类型、yield 返回、@register。
+
+    注意：AstrBot 的 @filter.command 与 SDK 的 @on_command 参数名不一致，
+    必须在这里做参数改写，否则会 TypeError。
+    """
+
+    # ---- 第一步：@filter.command(...) → @on_command(...)，同时修正参数 ----
+    # AstrBot: filter.command(cmd, alias={...}, desc="...")
+    # SDK    : on_command(cmd, aliases=[...], description="...")
+    def _fix_command_args(m: re.Match) -> str:
+        args = m.group(1)
+
+        # alias={"a", "b"}   → aliases=["a", "b"]   （集合 → 列表）
+        args = re.sub(r'alias\s*=\s*\{([^}]*)\}', r'aliases=[\1]', args)
+        # alias=set(["a", "b"]) → aliases=["a", "b"]
+        args = re.sub(r'alias\s*=\s*set\(\s*\[([^\]]*)\]\s*\)', r'aliases=[\1]', args)
+        # alias=["a", "b"]   → aliases=["a", "b"]
+        args = re.sub(r'alias\s*=\s*\[([^\]]*)\]', r'aliases=[\1]', args)
+        # alias="a" / alias='a' → aliases=["a"]      （单个字符串 → 列表）
+        args = re.sub(r'alias\s*=\s*(["\'])([^"\']*)\1', r'aliases=["\2"]', args)
+
+        # desc="..." → description="..."
+        args = re.sub(r'\bdesc\s*=', 'description=', args)
+
+        return f"@on_command({args})"
+
+    text = re.sub(r'@filter\.command\(([^)]*)\)', _fix_command_args, text)
+
+    # ---- 其余保持原样 ----
     # @filter.on_event(...) → @on_message()
     text = re.sub(r'@filter\.on_event\([^)]*\)', r'@on_message()', text)
     # AstrMessageEvent → MessageEvent
@@ -403,6 +443,7 @@ def     _rewrite_decorators(text: str) -> str:
     for method, attr in event_method_map.items():
         text = re.sub(rf'\bevent\.{method}\(\)', f'event.{attr}', text)
     return text
+
 
 
 def _remove_legacy_init(text: str) -> str:
@@ -615,6 +656,15 @@ def _list_plugins() -> list[dict]:
         plugin_yaml = d / "plugin.yaml"
 
         info = {"name": d.name, "display_name": d.name, "desc": "", "version": ""}
+        logo_path = d / "logo.png"
+        if logo_path.exists():
+            try:
+                b64 = base64.b64encode(logo_path.read_bytes()).decode()
+                info["logo"] = f"data:image/png;base64,{b64}"
+            except Exception:
+                info["logo"] = None
+        else:
+            info["logo"] = None
 
         # metadata.yaml 优先，其次 plugin.yaml
         for f in (metadata, plugin_yaml):
@@ -631,7 +681,7 @@ def _list_plugins() -> list[dict]:
                     if meta.get("description"):
                         info["desc"] = meta["description"]
                     if meta.get("version") is not None:
-                        info["version"] = str(meta["version"])
+                        info["version"] = str(meta["version"]).lstrip("vV")
                     break
                 except Exception:
                     pass
@@ -678,13 +728,22 @@ def api_plugins_switch():
     data = request.get_json(silent=True) or {}
     name = (data.get("name") or "").strip()
 
+    # 空字符串 → 卸载当前插件，回到空闲状态
     if not name:
-        return jsonify({"error": "缺少插件名"}), 400
+        try:
+            with _switch_lock:
+                if _current_plugin:
+                    log_buffer.add(f"[切换] 卸载 {_current_plugin} → 空闲")
+                _unload_current()
+            return jsonify({"ok": True, "current": None})
+        except Exception as e:
+            log_buffer.add(f"[ERROR] 卸载插件失败：{e}", level="ERROR")
+            return jsonify({"error": str(e)}), 500
+
     if name == _current_plugin:
         return jsonify({"ok": True, "current": _current_plugin})
 
     try:
-        # _switch_lock 保证并发切换时不会互相打断
         with _switch_lock:
             log_buffer.add(f"[切换] 卸载 {_current_plugin} → 加载 {name}")
             _unload_current()
@@ -692,7 +751,7 @@ def api_plugins_switch():
         log_buffer.add(f"[切换] 当前插件：{name}")
         return jsonify({"ok": True, "current": name})
     except Exception as e:
-        log_buffer.add(f"[ERROR] 切换插件失败：{e}")
+        log_buffer.add(f"[ERROR] 切换插件失败：{e}", level="ERROR")
         return jsonify({"error": str(e)}), 500
 
 
@@ -740,6 +799,86 @@ def _start_flask() -> None:
         use_reloader=False,
     )
 
+# ==================== 辅助函数：查找插件目录 ====================
+def _get_plugin_dir(plugin_name: str) -> Path:
+    p = PLUGINS_DIR / plugin_name
+    if not p.exists() or not p.is_dir():
+        raise FileNotFoundError(f"插件不存在: {plugin_name}")
+    return p
+
+# ==================== API: 读取 README ====================
+@app.route("/api/plugin/<plugin_name>/readme")
+def api_plugin_readme(plugin_name):
+    try:
+        pdir = _get_plugin_dir(plugin_name)
+        readme_path = None
+        for name in ["README.md", "readme.md", "Readme.md"]:
+            candidate = pdir / name
+            if candidate.exists():
+                readme_path = candidate
+                break
+        if not readme_path:
+            return jsonify({"error": "该插件未提供 README.md"}), 404
+        content = readme_path.read_text(encoding="utf-8")
+        return jsonify({"content": content})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ==================== API: 读取配置 Schema 与当前值 ====================
+@app.route("/api/plugin/<plugin_name>/config")
+def api_plugin_config(plugin_name):
+    try:
+        pdir = _get_plugin_dir(plugin_name)
+        schema_path = pdir / "_conf_schema.json"
+        if not schema_path.exists():
+            return jsonify({"schema": None, "config": {}})
+
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+        # 读取已保存的配置（默认存为 data/config/<plugin_name>_config.json）
+        config_file = Path("data/config") / f"{plugin_name}_config.json"
+        saved_config = {}
+        if config_file.exists():
+            try:
+                saved_config = json.loads(config_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        return jsonify({"schema": schema, "config": saved_config})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ==================== API: 保存配置 ====================
+@app.route("/api/plugin/<plugin_name>/config", methods=["POST"])
+def api_save_plugin_config(plugin_name):
+    try:
+        data = request.get_json()
+        config_data = data.get("config", {})
+        config_dir = Path("data/config")
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config_file = config_dir / f"{plugin_name}_config.json"
+        config_file.write_text(json.dumps(config_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ==================== API: 读取行为（指令）列表 ====================
+@app.route("/api/plugin/<plugin_name>/behaviors")
+def api_plugin_behaviors(plugin_name):
+    try:
+        pdir = _get_plugin_dir(plugin_name)
+        main_py = pdir / "main.py"
+        behaviors = []
+        if main_py.exists():
+            import re
+            text = main_py.read_text(encoding="utf-8")
+            # 匹配 @filter.command("xxx") 或 @on_command("xxx")
+            for m in re.finditer(r'@(?:filter\.command|on_command)\(["\']([^"\']+)["\']', text):
+                behaviors.append({"type": "command", "name": m.group(1)})
+        return jsonify({"behaviors": behaviors})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 # ==================== 主流程 ====================
 
 
@@ -773,14 +912,8 @@ def main() -> None:
     while _loop is None:
         time.sleep(0.01)
 
-    # 2. 加载默认插件
-    default_plugin = CONFIG.get("default_plugin", "test_plugin")
-    try:
-        _load_plugin(default_plugin)
-        log_buffer.add(f"[启动] 插件加载完成：{default_plugin}")
-    except Exception as e:
-        log_buffer.add(f"[ERROR] 插件加载失败：{e}")
-        raise
+    # 2. 不自动加载插件，等用户在 UI 里选择
+    log_buffer.add("[启动] 未加载插件，等待用户选择")
 
     # 3. 注册退出清理
     atexit.register(_cleanup)
