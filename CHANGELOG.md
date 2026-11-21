@@ -7,13 +7,41 @@
 
 ## [Unreleased]
 
+## [0.1.0-alpha.3] - 2026-11-21
+
+### 新增
+
+- **插件配置界面**：点击插件卡片「设置」按钮，读取插件的 `_conf_schema.json` 动态生成表单，支持 bool / int / float / string / 多行文本 / 下拉选项，支持单项「恢复默认值」，保存后写入 `data/config/<插件名>_config.json`
+- **配置表单组件化**：配置表单渲染逻辑拆分为独立组件 `web/components/config_form.js`，对外暴露 `ConfigForm.open(pluginName)`，与 `log_viewer.js` 保持同一套 IIFE + 全局对象风格，便于后续事件面板等组件复用
+
+### 改进
+
+- **插件卡片布局重排**：Logo 在左，右侧第一行为「显示名 + 版本号」同行排列，第二行为描述（最多两行截断）；三个操作按钮紧贴内容底部右对齐，卡片内边距由 16px 收窄到 14px，整体更紧凑
+- **插件卡片不再显示插件目录名**：只展示 `display_name` 与版本号，避免长包名（如 `astrbot_plugin_xxx-main`）撑破布局；目录名仍用于内部识别与切换
+
+### 修复
+
+- 修复含 `MessageEventResult` 的导入行被较短模式优先匹配、导致 `cannot import name 'MessageEventResult'` 的问题：长模式前置，并增加正则整行兜底重写 `astrbot.api.event` / `astrbot.api.star` 导入
+- 修复 `@filter.command(..., alias={...})` 转成 `@on_command(..., alias=...)` 时报 `unexpected keyword argument 'alias'` 的问题：现在自动改写为 `aliases=[...]`，兼容 **set / list / 单个字符串** 三种写法，同时把 `desc=` 改写为 `description=`
+- 修复导入兜底正则在替换循环内重复执行的问题（移出循环，仅执行一次）
+
+### 已知问题
+
+- `PluginHarness` 在 `session_waiter` 场景下存在分发问题（上游 Issue #32）
+- 仅支持 macOS，Windows / Linux 未验证
+- 仅支持文本消息，富媒体与事件按钮尚未实现
+- 假 LLM 固定回复，不解析 `system_prompt`，不真正判断内容
+- 复杂装饰器写法（多行装饰器、位置参数、动态构造参数）可能转换失败
+- 插件运行时会在工作目录生成数据文件（如 `fortune_data.json`），暂无独立数据目录隔离
+
+
 ## [0.1.0-alpha.2] - 2026-11-07
 
 ### 新增
 
 - **假 LLM**：`FakeContext.llm_generate(...)` 返回固定格式的模拟回复，不调用真实 API、不消耗 token。后端日志显示被调用的 `provider_id` 和 `prompt` 预览。
 - **插件切换**：UI 顶部下拉 + 插件列表卡片，点击后后端自动卸载当前插件、加载新插件。切换前弹出确认框“会终止当前测试”。
-- **侧边栏布局**：左侧 200px 宽导航，包含「聊天」「插件列表」「设置」三个视图。
+- **侧边栏布局**：左侧 200px 宽导航，包含「测试」「插件列表」「设置」三个视图。
 - **主题切换**：深色 / 亮色两套主题，选择记忆到 `localStorage`。
 - **日志面板升级**：
   - 级别：DEBUG / INFO / WARNING / ERROR 四级过滤
