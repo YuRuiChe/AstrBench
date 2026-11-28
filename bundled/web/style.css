@@ -383,6 +383,49 @@ body {
   cursor: not-allowed;
 }
 
+/* 输入框容器 + 指令提示（/ 触发） */
+.input-wrap { position: relative; }
+
+.cmd-hint {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 100%;
+  margin-bottom: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.25);
+  z-index: 50;
+}
+.cmd-hint[hidden] { display: none !important; }
+
+.cmd-hint-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.cmd-hint-item .cmd-name {
+  color: var(--accent);
+  font-family: "SF Mono", Menlo, monospace;
+  white-space: nowrap;
+}
+.cmd-hint-item .cmd-alias { color: var(--muted); font-size: 11px; }
+.cmd-hint-item .cmd-desc {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+
 /* ==================== 日志面板 ==================== */
 
 .logs {
@@ -450,6 +493,35 @@ body {
   padding: 8px;
   font-family: -apple-system, sans-serif;
 }
+
+/* 日志工具按钮 */
+.logs-tools { display: flex; align-items: center; gap: 6px; }
+
+.log-tool-btn {
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  line-height: 1.6;
+}
+.log-tool-btn:hover { border-color: var(--accent); }
+
+/* 日志全屏 */
+.logs.logs-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  padding: 16px 20px;
+  border-radius: 0;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.45);
+}
+
+.logs.logs-fullscreen .log-view { max-height: none; }
+
 
 /* ==================== 插件列表 / 设置面板 ==================== */
 
@@ -534,6 +606,77 @@ body {
 .settings-row label {
   width: 160px;
   color: var(--muted);
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+
+.settings-header h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.settings-tab {
+  padding: 5px 14px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.settings-tab:hover {
+  border-color: var(--accent);
+}
+
+.settings-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.settings-pane[hidden] {
+  display: none !important;
+}
+
+.config-json-editor {
+  width: 100%;
+  min-height: 240px;
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+}
+
+.config-json-editor:focus {
+  border-color: var(--accent);
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 10px;
 }
 
 .muted {
@@ -887,6 +1030,10 @@ select option {
   font-size: 14px;
   color: var(--accent);
 }
+
+.behavior-aliases { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.behavior-item code.behavior-alias { font-size: 12px; color: var(--muted); }
+.behavior-desc { flex: 1; text-align: right; font-size: 11px; color: var(--muted); }
 
 /* ==================== Markdown 内容样式 ==================== */
 .markdown-body h1 { font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }

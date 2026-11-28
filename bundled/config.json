@@ -6,5 +6,9 @@
   "log": {
     "max_lines": 500,
     "poll_interval_ms": 2000
+  },
+  "ui": {
+    "theme": "dark",
+    "log_level": "debug"
   }
 }

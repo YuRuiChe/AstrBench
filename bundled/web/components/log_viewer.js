@@ -8,7 +8,7 @@ const LogViewer = (() => {
   // 级别权重：值越大越严重
   const LEVELS = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3 };
 
-  function init(element, select) {
+  function init(element, select, defaultLevel) {
     el = element;
     levelSelect = select;
 
@@ -16,15 +16,22 @@ const LogViewer = (() => {
       levelSelect.addEventListener("change", (e) => setLevel(e.target.value));
     }
 
-    const saved = localStorage.getItem("astrbench-log-level");
-    setLevel(saved || "info");
+    // 完全以 config.json 的 ui.log_level 为准
+    setLevel(defaultLevel || "info");
   }
+
 
   function setLevel(level) {
     currentLevel = (level || "info").toLowerCase();
-    localStorage.setItem("astrbench-log-level", currentLevel);
     if (levelSelect) levelSelect.value = currentLevel;
     render();
+  }
+  function visibleLines() {
+    const minLevel = LEVELS[currentLevel.toUpperCase()] ?? 1;
+    return allLines.filter(item => {
+      const lv = LEVELS[(item.level || "INFO").toUpperCase()] ?? 1;
+      return lv >= minLevel;
+    });
   }
 
   async function poll(url) {
@@ -42,14 +49,10 @@ const LogViewer = (() => {
     }
   }
 
-  function render() {
+    function render() {
     if (!el) return;
 
-    const minLevel = LEVELS[currentLevel.toUpperCase()] ?? 1;
-    const filtered = allLines.filter(item => {
-      const lv = LEVELS[(item.level || "INFO").toUpperCase()] ?? 1;
-      return lv >= minLevel;
-    });
+    const filtered = visibleLines();
 
     if (filtered.length === 0) {
       el.innerHTML = `<div class="log-empty">（暂无日志）</div>`;
@@ -68,11 +71,44 @@ const LogViewer = (() => {
     el.scrollTop = el.scrollHeight;
   }
 
+
   function clear() {
     allLines = [];
     lastCount = -1;
     render();
   }
+    function getText() {
+    return visibleLines().map(item => item.text).join("\n");
+  }
 
-  return { init, poll, render, setLevel, clear };
+  async function copyAll() {
+    const text = getText();
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try { ok = document.execCommand("copy"); } catch (_) {}
+      ta.remove();
+      return ok;
+    }
+  }
+
+  async function saveAll() {
+    const resp = await fetch("/api/logs/save", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lines: visibleLines() }),
+    });
+    return await resp.json();
+  }
+
+  return { init, poll, render, setLevel, clear, copyAll, saveAll, getText };
+
 })();

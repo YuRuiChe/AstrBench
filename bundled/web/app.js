@@ -13,11 +13,25 @@ const logLevelSelect = document.getElementById("log-level-select");
 const welcomeEl = document.getElementById("welcome");
 const chatActiveEl = document.getElementById("chat-active");
 const homeBtn = document.getElementById("home-btn");
+const logCopyBtn = document.getElementById("log-copy");
+const logOpenBtn = document.getElementById("log-open");
+const logFullBtn = document.getElementById("log-fullscreen");
+const cmdHintEl = document.getElementById("cmd-hint");
+const logsPanel = document.querySelector(".logs");
+const astrbotConfigPath = document.getElementById("astrbot-config-path");
+const astrbotConfigEditor = document.getElementById("astrbot-config-editor");
+const astrbotConfigSave = document.getElementById("astrbot-config-save");
+const astrbotConfigStatus = document.getElementById("astrbot-config-status");
+const defaultLogLevelSelect = document.getElementById("default-log-level-select");
 
+
+
+let commandCache = [];
 let logTimer = null;
 let currentPlugin = null;
 let pluginsData = [];
 let pollInterval = 2000;
+let defaultUi = { theme: "dark", log_level: "info" };
 
 // ==================== 主题 ====================
 
@@ -28,23 +42,23 @@ function applyTheme(theme) {
 }
 
 function setupTheme() {
-  const saved = localStorage.getItem("astrbench-theme");
-  const prefersLight = window.matchMedia("(prefers-color-scheme: light)").matches;
-  const theme = saved || (prefersLight ? "light" : "dark");
-  applyTheme(theme);
+  // 完全以 config.json 为准
+  applyTheme(defaultUi.theme || "dark");
 
   themeToggle.addEventListener("click", () => {
     const cur = document.documentElement.getAttribute("data-theme") || "dark";
     const next = cur === "dark" ? "light" : "dark";
     applyTheme(next);
-    localStorage.setItem("astrbench-theme", next);
+    saveUiDefaults({ theme: next });      // 写回 config.json
   });
 
   themeSelect.addEventListener("change", (e) => {
-    applyTheme(e.target.value);
-    localStorage.setItem("astrbench-theme", e.target.value);
+    const v = e.target.value;
+    applyTheme(v);
+    saveUiDefaults({ theme: v });          // 写回 config.json
   });
 }
+
 
 // ==================== 视图切换 ====================
 
@@ -92,6 +106,11 @@ async function loadGlobalConfig() {
     if (configPathEl && cfg.config_path) {
       configPathEl.textContent = cfg.config_path;
     }
+    defaultUi = {
+      theme: cfg?.ui?.theme || "dark",
+      log_level: cfg?.ui?.log_level || "info",
+    };
+
   } catch (e) {
     if (versionEl) versionEl.textContent = "(配置读取失败)";
   }
@@ -228,6 +247,7 @@ async function switchPlugin(name) {
     renderPluginList();
     LogViewer.clear();
     await LogViewer.poll();
+    await loadCommands();
   } catch (e) {
     alert(`切换请求失败：${e}`);
     renderPluginSelect();
@@ -259,6 +279,7 @@ async function goHome() {
     renderPluginList();
     LogViewer.clear();
     await LogViewer.poll();
+    await loadCommands();
   } catch (e) {
     alert(`请求失败：${e}`);
   } finally {
@@ -275,6 +296,89 @@ function escapeHtml(s) {
   div.textContent = String(s || "");
   return div.innerHTML;
 }
+
+// ==================== 指令提示（/ 触发，仅显示不补全） ====================
+
+async function loadCommands() {
+  commandCache = [];
+  if (cmdHintEl) cmdHintEl.hidden = true;
+  if (!currentPlugin) return;
+  try {
+    const resp = await fetch("/api/commands");
+    const data = await resp.json();
+    commandCache = data.commands || [];
+  } catch (e) {
+    console.error("加载指令列表失败:", e);
+  }
+}
+
+function updateCmdHint() {
+  if (!cmdHintEl) return;          // 元素缺失时跳过，避免 null 报错
+  const raw = msgInput.value;
+  if (!currentPlugin || !raw.startsWith("/") || /\s/.test(raw)) {
+    cmdHintEl.hidden = true;
+    return;
+  }
+
+  const token = raw.slice(1).toLowerCase();
+  const matches = commandCache.filter(c => {
+    const names = [c.name, ...(c.aliases || [])].map(n => String(n).toLowerCase());
+    return names.some(n => n.startsWith(token));
+  });
+
+  const exact = matches.length === 1 &&
+    [matches[0].name, ...(matches[0].aliases || [])]
+      .some(n => String(n).toLowerCase() === token);
+  if (matches.length === 0 || exact) {
+    cmdHintEl.hidden = true;
+    return;
+  }
+
+  cmdHintEl.innerHTML = "";
+  for (const c of matches) {
+    const row = document.createElement("div");
+    row.className = "cmd-hint-item";
+    const aliasText = (c.aliases || []).map(a => `/${a}`).join("  ");
+    row.innerHTML =
+      `<span class="cmd-name">/${escapeHtml(c.name)}</span>` +
+      (aliasText ? `<span class="cmd-alias">别名 ${escapeHtml(aliasText)}</span>` : "") +
+      (c.desc ? `<span class="cmd-desc">${escapeHtml(c.desc)}</span>` : "");
+    cmdHintEl.appendChild(row);
+  }
+  cmdHintEl.hidden = false;
+}
+
+// ==================== 日志工具按钮 ====================
+
+function setupLogTools() {
+  logCopyBtn.addEventListener("click", async () => {
+    const ok = await LogViewer.copyAll();
+    if (!ok) alert("复制失败，请手动选择日志文本");
+  });
+
+  // 日志已自动写入 /log，此按钮只用于打开目录查看
+  logOpenBtn.addEventListener("click", async () => {
+    const resp = await fetch("/api/logs/open", { method: "POST" });
+    const r = await resp.json();
+    if (r.error) alert(`打开失败：${r.error}`);
+  });
+
+  const setFull = (on) => {
+    logsPanel.classList.toggle("logs-fullscreen", on);
+    logFullBtn.textContent = on ? "还原" : "全屏";   // 中文，避免字体缺字形
+  };
+
+  logFullBtn.addEventListener("click", () => {
+    setFull(!logsPanel.classList.contains("logs-fullscreen"));
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && logsPanel.classList.contains("logs-fullscreen")) {
+      setFull(false);
+    }
+  });
+}
+
 
 // ==================== 测试 ====================
 
@@ -298,6 +402,7 @@ async function send() {
 
   appendMessage("user", text);
   msgInput.value = "";
+  updateCmdHint();
   sendBtn.disabled = true;
 
   try {
@@ -324,10 +429,122 @@ async function send() {
 
 function setupSend() {
   sendBtn.addEventListener("click", send);
+  msgInput.addEventListener("input", updateCmdHint);
   msgInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") send();
   });
 }
+
+// ==================== 界面默认（主题 / 日志级别） ====================
+
+async function saveUiDefaults(patch) {
+  Object.assign(defaultUi, patch);
+  try {
+    const resp = await fetch("/api/config/ui", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    const r = await resp.json();
+    if (r.error) {
+      console.error("保存界面默认失败:", r.error);
+    } else if (r.ui) {
+      Object.assign(defaultUi, r.ui);   // 以服务端返回值回填，保证一致
+    }
+  } catch (e) {
+    console.error("保存界面默认失败:", e);
+  }
+}
+
+
+function setupDefaultSettings() {
+  if (themeSelect) themeSelect.value = defaultUi.theme || "dark";
+  if (defaultLogLevelSelect) {
+    defaultLogLevelSelect.value = defaultUi.log_level || "info";
+    defaultLogLevelSelect.addEventListener("change", (e) => {
+      const v = e.target.value;
+      LogViewer.setLevel(v);                     // 立即生效
+      saveUiDefaults({ log_level: v });           // 写回 config.json
+    });
+  }
+  // 日志面板右上的级别选择同样写回 config.json
+  if (logLevelSelect) {
+    logLevelSelect.addEventListener("change", (e) => {
+      saveUiDefaults({ log_level: e.target.value });
+    });
+  }
+}
+
+
+// ==================== 设置页：双标签（AstrBench / AstrBot） ====================
+
+function setupSettingsTabs() {
+  const tabs = document.querySelectorAll(".settings-tab");
+  tabs.forEach(tab => {
+    tab.addEventListener("click", () => {
+      const name = tab.dataset.tab;
+      tabs.forEach(t => t.classList.toggle("active", t === tab));
+      document.querySelectorAll(".settings-pane").forEach(pane => {
+        pane.hidden = pane.id !== `settings-pane-${name}`;
+      });
+      if (name === "astrbot") loadAstrBotConfig();
+    });
+  });
+}
+
+async function loadAstrBotConfig() {
+  if (!astrbotConfigEditor) return;
+  try {
+    const resp = await fetch("/api/astrbot/config");
+    const data = await resp.json();
+    if (data.error) {
+      astrbotConfigStatus.textContent = `读取失败：${data.error}`;
+      return;
+    }
+    if (astrbotConfigPath) astrbotConfigPath.textContent = data.path || "";
+    const cfg = data.config || {};
+    const isEmpty = !cfg || Object.keys(cfg).length === 0;
+    astrbotConfigEditor.value = isEmpty
+      ? "{\n  \n}"
+      : JSON.stringify(cfg, null, 2);
+    astrbotConfigStatus.textContent = isEmpty ? "暂无配置项" : "";
+  } catch (e) {
+    astrbotConfigStatus.textContent = `读取失败：${e}`;
+  }
+}
+
+function setupAstrBotConfigSave() {
+  if (!astrbotConfigSave) return;
+  astrbotConfigSave.addEventListener("click", async () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(astrbotConfigEditor.value || "{}");
+    } catch (e) {
+      alert(`JSON 格式错误：${e.message}`);
+      return;
+    }
+    astrbotConfigSave.disabled = true;
+    try {
+      const resp = await fetch("/api/astrbot/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: parsed }),
+      });
+      const r = await resp.json();
+      if (r.error) {
+        astrbotConfigStatus.textContent = `保存失败：${r.error}`;
+      } else {
+        astrbotConfigStatus.textContent = "已保存";
+        if (astrbotConfigPath && r.path) astrbotConfigPath.textContent = r.path;
+      }
+    } catch (e) {
+      astrbotConfigStatus.textContent = `保存失败：${e}`;
+    } finally {
+      astrbotConfigSave.disabled = false;
+    }
+  });
+}
+
 
 // ==================== 日志轮询（委托给 LogViewer） ====================
 
@@ -394,10 +611,16 @@ async function openBehaviorsDialog(pluginName) {
     } else {
       const list = document.createElement("div");
       list.className = "behavior-list";
-      data.behaviors.forEach(b => {
+            data.behaviors.forEach(b => {
         const item = document.createElement("div");
         item.className = "behavior-item";
-        item.innerHTML = `<span class="behavior-type">${escapeHtml(b.type)}</span><code>/${escapeHtml(b.name)}</code>`;
+        const aliasHtml = (b.aliases || [])
+          .map(a => `<code class="behavior-alias">/${escapeHtml(a)}</code>`).join("");
+        item.innerHTML =
+          `<span class="behavior-type">${escapeHtml(b.type)}</span>` +
+          `<code>/${escapeHtml(b.name)}</code>` +
+          (aliasHtml ? `<span class="behavior-aliases">别名 ${aliasHtml}</span>` : "") +
+          (b.desc ? `<span class="behavior-desc">${escapeHtml(b.desc)}</span>` : "");
         list.appendChild(item);
       });
       body.innerHTML = "";
@@ -411,14 +634,18 @@ async function openBehaviorsDialog(pluginName) {
 // ==================== 初始化 ====================
 
 async function init() {
-  setupTheme();
+  await loadGlobalConfig();        // 唯一来源：config.json
+  setupTheme();                    // 依赖 defaultUi.theme
   setupViewNav();
   setupSend();
   setupPluginSelect();
   setupHomeBtn();
   setupPluginListActions();
-  LogViewer.init(logViewEl, logLevelSelect);
-  await loadGlobalConfig();
+  setupLogTools();
+  setupSettingsTabs();
+  setupAstrBotConfigSave();
+  setupDefaultSettings();
+  LogViewer.init(logViewEl, logLevelSelect, defaultUi.log_level);
   await loadPlugins();
   startLogPolling();
   msgInput.focus();

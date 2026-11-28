@@ -59,9 +59,12 @@
             <!-- 测试页（选插件后显示） -->
             <div id="chat-active" class="chat-active" hidden>
               <div id="chat-log" class="chat-log"></div>
-              <div class="input-row">
-                <input id="msg-input" type="text" placeholder="输入消息，例如 /hello" autocomplete="off">
-                <button id="send-btn">发送</button>
+              <div class="input-wrap">
+                <div id="cmd-hint" class="cmd-hint" hidden></div>
+                <div class="input-row">
+                  <input id="msg-input" type="text" placeholder="输入消息，例如 /hello" autocomplete="off">
+                  <button id="send-btn">发送</button>
+                </div>
               </div>
             </div>
           </div>
@@ -69,12 +72,17 @@
           <aside class="logs">
             <div class="logs-header">
               <h2>运行日志</h2>
-              <select id="log-level-select" class="log-level-select" title="日志级别">
-                <option value="debug">DEBUG</option>
-                <option value="info" selected>INFO</option>
-                <option value="warning">WARNING</option>
-                <option value="error">ERROR</option>
-              </select>
+              <div class="logs-tools">
+                <select id="log-level-select" class="log-level-select" title="日志级别">
+                  <option value="debug">DEBUG</option>
+                  <option value="info" selected>INFO</option>
+                  <option value="warning">WARNING</option>
+                  <option value="error">ERROR</option>
+                </select>
+                <button id="log-copy" class="log-tool-btn" title="复制当前日志">复制</button>
+                <button id="log-open" class="log-tool-btn" title="打开日志目录（日志会自动写入）">目录</button>
+                <button id="log-fullscreen" class="log-tool-btn" title="全屏 / 退出全屏">全屏</button>
+              </div>
             </div>
             <div id="log-view" class="log-view"></div>
           </aside>
@@ -91,21 +99,54 @@
 
       <section class="view" id="view-settings" hidden>
         <div class="panel">
-          <h2>设置</h2>
-          <div class="settings-row">
-            <label for="theme-select">主题</label>
-            <select id="theme-select">
-              <option value="dark">暗色</option>
-              <option value="light">亮色</option>
-            </select>
+          <div class="settings-header">
+            <h2>设置</h2>
+            <div class="settings-tabs" role="tablist">
+              <button class="settings-tab active" data-tab="astrbench" role="tab">AstrBench</button>
+              <button class="settings-tab" data-tab="astrbot" role="tab">AstrBot</button>
+            </div>
           </div>
-          <div class="settings-row">
-            <label>日志轮询间隔</label>
-            <span id="poll-interval-info" class="muted"></span>
+
+          <!-- AstrBench 自身设置：bundled/config.json -->
+          <div class="settings-pane" id="settings-pane-astrbench">
+            <div class="settings-row">
+              <label for="theme-select">默认主题</label>
+              <select id="theme-select">
+                <option value="dark">暗色</option>
+                <option value="light">亮色</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <label for="default-log-level-select">默认日志级别</label>
+              <select id="default-log-level-select">
+                <option value="debug">DEBUG</option>
+                <option value="info">INFO</option>
+                <option value="warning">WARNING</option>
+                <option value="error">ERROR</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <label>日志轮询间隔</label>
+              <span id="poll-interval-info" class="muted"></span>
+            </div>
+            <div class="settings-row">
+              <label>配置文件</label>
+              <span id="config-path" class="muted"></span>
+            </div>
           </div>
-          <div class="settings-row">
-            <label>配置文件</label>
-            <span id="config-path" class="muted"></span>
+
+          <!-- AstrBot 设置：bundled/data/cmd_config.json -->
+          <div class="settings-pane" id="settings-pane-astrbot" hidden>
+            <div class="settings-row">
+              <label>配置文件</label>
+              <span id="astrbot-config-path" class="muted"></span>
+            </div>
+            <p class="panel-hint">内容暂时为空，可直接编辑下方 JSON 后保存。</p>
+            <textarea id="astrbot-config-editor" class="config-json-editor" spellcheck="false"></textarea>
+            <div class="settings-actions">
+              <span id="astrbot-config-status" class="muted"></span>
+              <button id="astrbot-config-save" class="btn-primary">保存</button>
+            </div>
           </div>
         </div>
       </section>
