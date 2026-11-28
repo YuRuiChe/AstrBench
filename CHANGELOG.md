@@ -7,6 +7,49 @@
 
 ## [Unreleased]
 
+## [0.1.0-alpha.4] - 2026-11-28
+
+### 新增
+
+- **日志面板工具**：右上角新增「复制」「目录」「全屏」三个按钮。复制取当前级别过滤后的全部日志（`navigator.clipboard` 失败时回退 `execCommand`）；目录在 Finder 中打开日志文件夹；全屏切换日志面板为整窗浮层，`Esc` 退出
+- **日志自动落盘（双文件按天切分）**：
+  - `log/backend-YYYY-MM-DD.log`：`loguru` 全量日志，含 SDK DEBUG 与异常堆栈，每天 0 点切分，保留 30 天，`enqueue=True` 保证 Flask 线程与 asyncio 线程安全
+  - `log/frontend-YYYY-MM-DD.log`：与前端面板内容一致的业务日志（`[启动]` / `[UI]` / `[插件]` / `[切换]` / `[设置]` / `[ERROR]`），随 `LogBuffer.add()` 就地追加
+  - 不再需要手动「保存」日志
+- **插件指令别名与描述展示**：指令解析同时识别 `alias` / `aliases`（集合、列表、单字符串三种写法）与 `desc` / `description`；行为弹窗按「类型 + 主指令 + 别名 + 描述」展示
+- **输入框指令提示（`/` 触发）**：输入 `/` 时在输入框上方竖向列出当前插件的全部指令（含别名、描述）；继续输入逐步收敛，唯一命中后自动收起。**仅作提示，不做 Tab 补全、不点击填入**
+- **设置页双标签**：「设置」标题右侧并排 `AstrBench` / `AstrBot` 两个按钮，当前项高亮
+  - **AstrBench**：默认主题、默认日志级别、日志轮询间隔、`bundled/config.json` 路径
+  - **AstrBot**：`bundled/data/cmd_config.json` 路径 + JSON 编辑器 + 保存（前端先校验 JSON 合法性）
+- **默认主题 / 默认日志级别**：写入 `bundled/config.json` 的 `ui` 段，新增 `POST /api/config/ui` 局部更新接口（只改 `ui`，其余字段原样保留）
+- **新增 API**：`GET/POST /api/astrbot/config`、`POST /api/config/ui`、`GET /api/commands`、`POST /api/logs/open`、`GET /api/logs/path`
+
+### 改进
+
+- **数据目录重组**：`bundled/plugins` → `bundled/data/plugins`；插件生成的配置统一落到 `bundled/data/config/<插件名>_config.json`；新增 `bundled/data/cmd_config.json` 承载 AstrBot 侧配置（初始为空对象）
+- **主题与日志级别改为完全以 `config.json` 为唯一来源**：移除 `localStorage` 记忆与系统深浅色回退；顶部「暗色/亮色」按钮、设置页两个下拉、日志面板级别选择，任一操作都即时写回 `config.json`
+- **指令解析统一**：`/api/plugin/<name>/behaviors` 与新增 `/api/commands` 共用 `_parse_commands()`，避免两套正则不一致
+- 启动日志增补「日志目录」提示，便于定位落盘位置
+- 设置页 AstrBench 标签补一行说明：默认值写入 `config.json`，下次启动生效
+
+### 修复
+
+- 修复输入 `/` 时报 `TypeError: null is not an object (evaluating 'cmdHintEl.hidden = true')`：输入区补回 `.input-wrap` 与 `#cmd-hint` 容器，并在 `loadCommands()` / `updateCmdHint()` 增加空值保护
+- 修复全屏按钮显示为「条纹方块」：`⛶` / `⤢`（U+26F6 / U+2922）在 macOS 系统字体缺字形，改用中文「全屏 / 还原」
+- 修复日志面板空白：`aside.logs` 内补回被遗漏的 `<div id="log-view" class="log-view">`，`LogViewer.init(null, …)` 不再静默失效
+- 修复插件配置保存仍写入相对路径 `Path("data/config")` 的残留逻辑，统一走 `PLUGIN_CONFIG_DIR`
+
+### 已知问题
+
+- `PluginHarness` 在 `session_waiter` 场景下存在分发问题（上游 Issue #32）
+- 仅支持 macOS，Windows / Linux 未验证
+- 仅支持文本消息，富媒体（图片、@、文件）未实现
+- 假 LLM 固定回复，不解析 `system_prompt`
+- 事件按钮、热重载尚未实现
+- 打包为 `.app` 后 `bundled/` 位于只读的 `_MEIPASS`，此时写 `bundled/config.json` 不会持久（源码运行时正常）；后续需迁移到用户数据目录
+- 插件运行时可能在工作目录生成数据文件（如 `fortune_data.json`），暂无独立数据目录隔离
+
+
 ## [0.1.0-alpha.3] - 2026-11-21
 
 ### 新增
