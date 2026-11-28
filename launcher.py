@@ -187,15 +187,19 @@ except Exception as e:
 APP_NAME = "AstrBench"
 
 if getattr(sys, "frozen", False):
-    # PyInstaller 打包后，资源在临时解压目录
+    BASE_DIR = Path.home() / "Library" / "Application Support" / APP_NAME
     BUNDLED_DIR = Path(sys._MEIPASS)
 else:
-    # 开发模式：launcher.py 同级的 bundled/
-    BUNDLED_DIR = Path(__file__).parent / "bundled"
+    BASE_DIR = Path(__file__).parent
+    BUNDLED_DIR = BASE_DIR / "bundled"
 
 WEB_DIR = BUNDLED_DIR / "web"
-CONFIG_FILE = BUNDLED_DIR / "config.json"
-PLUGINS_DIR = BUNDLED_DIR / "plugins"
+CONFIG_FILE = BUNDLED_DIR / "config.json"      # 程序自身配置，仍在 bundled 根
+DATA_DIR = BUNDLED_DIR / "data"                # 数据根目录
+PLUGINS_DIR = DATA_DIR / "plugins"             # 插件从这里读
+PLUGIN_CONFIG_DIR = DATA_DIR / "config"        # 插件生成的配置写这里
+LOG_DIR = BASE_DIR / "log"                     # 日志保存目录（/astrbench/log）
+ASTRBOT_CONFIG_FILE = DATA_DIR / "cmd_config.json"   # AstrBot 侧配置
 
 # ==================== 全局配置 ====================
 
@@ -205,6 +209,7 @@ def load_config() -> dict:
     defaults = {
         "server": {"host": "127.0.0.1", "port": 5001},
         "log": {"max_lines": 500, "poll_interval_ms": 2000},
+        "ui": {"theme": "dark", "log_level": "info"},
     }
     if not CONFIG_FILE.exists():
         data = {}
@@ -218,6 +223,7 @@ def load_config() -> dict:
     merged = {**defaults, **data}
     merged["server"] = {**defaults["server"], **data.get("server", {})}
     merged["log"] = {**defaults["log"], **data.get("log", {})}
+    merged["ui"] = {**defaults["ui"], **data.get("ui", {})}
     merged["version"] = __version__
     merged["config_path"] = str(CONFIG_FILE)
     return merged
@@ -232,12 +238,18 @@ MAX_LOG_LINES = CONFIG["log"]["max_lines"]
 
 
 class LogBuffer:
-    """线程安全的环形日志缓冲，每条带级别。"""
+    """线程安全的环形日志缓冲；每条同时按天写入 frontend-YYYY-MM-DD.log。"""
 
     def __init__(self, max_lines: int = 500):
-        self.lines: list[dict] = []          # ← 从 str 改成 dict
+        self.lines: list[dict] = []
         self.max_lines = max_lines
         self.lock = threading.Lock()
+        self._log_dir: Path | None = None
+
+    def set_log_dir(self, log_dir: Path) -> None:
+        """启用前端日志落盘；应在第一次 add() 之前调用。"""
+        log_dir.mkdir(parents=True, exist_ok=True)
+        self._log_dir = log_dir
 
     def add(self, text: str, level: str = "INFO") -> None:
         with self.lock:
@@ -247,10 +259,25 @@ class LogBuffer:
             })
             if len(self.lines) > self.max_lines:
                 self.lines = self.lines[-self.max_lines:]
+            if self._log_dir is not None:
+                self._append_frontend(text)
+
+    def _append_frontend(self, text: str) -> None:
+        """按天追加 frontend-YYYY-MM-DD.log；写失败不影响主流程。"""
+        try:
+            now = time.localtime()
+            day = time.strftime("%Y-%m-%d", now)
+            ts = time.strftime("%Y-%m-%d %H:%M:%S", now)
+            path = self._log_dir / f"frontend-{day}.log"
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(f"{ts} | {text}\n")
+        except Exception:
+            pass
 
     def get(self) -> list[dict]:
         with self.lock:
             return list(self.lines)
+
 
 
 log_buffer = LogBuffer(max_lines=MAX_LOG_LINES)
@@ -268,6 +295,29 @@ def _loguru_sink(message) -> None:
 
 # 添加 sink，最低级别 DEBUG，这样 debug 日志也能被捕获
 _loguru.add(_loguru_sink, level="DEBUG")
+
+
+# ---- 日志落盘：backend / frontend 双文件，按天切分 ----
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+# 后端日志：loguru 全量（含 SDK DEBUG、异常堆栈），每天一个文件
+BACKEND_LOG_PATTERN = str(LOG_DIR / "backend-{time:YYYY-MM-DD}.log")
+_loguru.add(
+    BACKEND_LOG_PATTERN,
+    level="DEBUG",
+    encoding="utf-8",
+    rotation="00:00",        # 每天 0 点切分
+    retention="30 days",     # 保留最近 30 天
+    enqueue=True,            # 线程安全（Flask 线程 + asyncio 线程）
+    format=(
+        "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level:<8} | "
+        "{name}:{function} - {message}"
+    ),
+)
+
+# 前端日志：前端面板显示的每一条，按天写入 frontend-YYYY-MM-DD.log
+log_buffer.set_log_dir(LOG_DIR)
+
 
 # ==================== 插件格式转换 ====================
 
@@ -710,6 +760,37 @@ def api_config():
     return jsonify(CONFIG)
 
 
+@app.route("/api/config/ui", methods=["POST"])
+def api_save_ui_config():
+    """保存界面默认（主题 / 日志级别）到 bundled/config.json 的 ui 段。"""
+    try:
+        payload = request.get_json(silent=True) or {}
+        ui = dict(CONFIG.get("ui") or {})
+        for key in ("theme", "log_level"):
+            if key in payload:
+                ui[key] = payload[key]
+        CONFIG["ui"] = ui
+
+        # 只改写磁盘文件里的 ui 段，其余字段原样保留
+        disk = {}
+        if CONFIG_FILE.exists():
+            try:
+                disk = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+            except Exception:
+                disk = {}
+        disk["ui"] = ui
+        CONFIG_FILE.write_text(
+            json.dumps(disk, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        log_buffer.add(
+            f"[设置] 默认已保存：主题={ui.get('theme')} 日志级别={ui.get('log_level')}"
+        )
+        return jsonify({"ok": True, "ui": ui})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/version")
 def api_version():
     return jsonify({"version": __version__})
@@ -786,6 +867,50 @@ def api_send():
 def api_logs():
     return jsonify({"lines": log_buffer.get()})
 
+@app.route("/api/logs/save", methods=["POST"])
+def api_logs_save():
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        data = request.get_json(silent=True) or {}
+        lines = data.get("lines")
+        if isinstance(lines, list) and lines:
+            text = "\n".join(
+                (l.get("text") if isinstance(l, dict) else str(l)) for l in lines
+            )
+        else:
+            text = "\n".join(item["text"] for item in log_buffer.get())
+
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        file = LOG_DIR / f"astrbench_{ts}.log"
+        file.write_text(text, encoding="utf-8")
+        log_buffer.add(f"[日志] 已保存到：{file.name}")
+        return jsonify({"ok": True, "path": str(file)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/logs/open", methods=["POST"])
+def api_logs_open():
+    """在 Finder 打开日志目录（日志已自动写入，这里只用于查看）。"""
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        import subprocess
+        subprocess.run(["open", str(LOG_DIR)], check=False)
+        return jsonify({"ok": True, "path": str(LOG_DIR)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/logs/path")
+def api_logs_path():
+    day = time.strftime("%Y-%m-%d")
+    return jsonify({
+        "dir": str(LOG_DIR),
+        "backend": str(LOG_DIR / f"backend-{day}.log"),
+        "frontend": str(LOG_DIR / f"frontend-{day}.log"),
+    })
+
+
 
 def _start_flask() -> None:
     # 关掉 werkzeug 的启动日志，避免刷屏
@@ -798,6 +923,39 @@ def _start_flask() -> None:
         debug=False,
         use_reloader=False,
     )
+
+# ==================== API: AstrBot 配置（cmd_config.json） ====================
+
+@app.route("/api/astrbot/config")
+def api_astrbot_config():
+    """读取 AstrBot 侧配置；文件不存在或为空则返回 {}。"""
+    try:
+        data = {}
+        if ASTRBOT_CONFIG_FILE.exists():
+            raw = ASTRBOT_CONFIG_FILE.read_text(encoding="utf-8").strip()
+            if raw:
+                data = json.loads(raw)
+        return jsonify({"path": str(ASTRBOT_CONFIG_FILE), "config": data})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/astrbot/config", methods=["POST"])
+def api_save_astrbot_config():
+    """保存 AstrBot 侧配置到 data/cmd_config.json。"""
+    try:
+        payload = request.get_json(silent=True) or {}
+        config_data = payload.get("config", {})
+        ASTRBOT_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        ASTRBOT_CONFIG_FILE.write_text(
+            json.dumps(config_data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        log_buffer.add(f"[设置] 已保存 AstrBot 配置：{ASTRBOT_CONFIG_FILE.name}")
+        return jsonify({"ok": True, "path": str(ASTRBOT_CONFIG_FILE)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 # ==================== 辅助函数：查找插件目录 ====================
 def _get_plugin_dir(plugin_name: str) -> Path:
@@ -836,7 +994,7 @@ def api_plugin_config(plugin_name):
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
         # 读取已保存的配置（默认存为 data/config/<plugin_name>_config.json）
-        config_file = Path("data/config") / f"{plugin_name}_config.json"
+        config_file = PLUGIN_CONFIG_DIR / f"{plugin_name}_config.json"
         saved_config = {}
         if config_file.exists():
             try:
@@ -854,30 +1012,71 @@ def api_save_plugin_config(plugin_name):
     try:
         data = request.get_json()
         config_data = data.get("config", {})
-        config_dir = Path("data/config")
-        config_dir.mkdir(parents=True, exist_ok=True)
-        config_file = config_dir / f"{plugin_name}_config.json"
+        PLUGIN_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        config_file = PLUGIN_CONFIG_DIR / f"{plugin_name}_config.json"
         config_file.write_text(json.dumps(config_data, ensure_ascii=False, indent=2), encoding="utf-8")
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# ==================== API: 读取行为（指令）列表 ====================
+    
+# ==================== 指令解析（支持别名/描述） ====================
+
+_CMD_RE = re.compile(
+    r"@(?:filter\.command|on_command)\(\s*([\"'])(?P<name>.*?)\1(?P<rest>[^)]*)\)"
+)
+_ALIAS_LIST_RE = re.compile(r"alias(?:es)?\s*=\s*[\[{]([^\]}]*)[\]}]")
+_ALIAS_STR_RE = re.compile(r"alias(?:es)?\s*=\s*[\"']([^\"']*)[\"']")
+_DESC_RE = re.compile(r"(?:desc|description)\s*=\s*[\"']([^\"']*)[\"']")
+
+
+def _parse_commands(plugin_dir: Path) -> list[dict]:
+    main_py = plugin_dir / "main.py"
+    if not main_py.exists():
+        return []
+    text = main_py.read_text(encoding="utf-8")
+    commands = []
+    for m in _CMD_RE.finditer(text):
+        name = m.group("name")
+        rest = m.group("rest")
+
+        aliases = []
+        am = _ALIAS_LIST_RE.search(rest)
+        if am:
+            aliases += [a.strip().strip("\"'") for a in am.group(1).split(",") if a.strip()]
+        else:
+            sm = _ALIAS_STR_RE.search(rest)
+            if sm and sm.group(1):
+                aliases.append(sm.group(1).strip())
+
+        dm = _DESC_RE.search(rest)
+        commands.append({
+            "type": "command",
+            "name": name,
+            "aliases": aliases,
+            "desc": dm.group(1) if dm else "",
+        })
+    return commands
+
+
 @app.route("/api/plugin/<plugin_name>/behaviors")
 def api_plugin_behaviors(plugin_name):
     try:
         pdir = _get_plugin_dir(plugin_name)
-        main_py = pdir / "main.py"
-        behaviors = []
-        if main_py.exists():
-            import re
-            text = main_py.read_text(encoding="utf-8")
-            # 匹配 @filter.command("xxx") 或 @on_command("xxx")
-            for m in re.finditer(r'@(?:filter\.command|on_command)\(["\']([^"\']+)["\']', text):
-                behaviors.append({"type": "command", "name": m.group(1)})
-        return jsonify({"behaviors": behaviors})
+        return jsonify({"behaviors": _parse_commands(pdir)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/commands")
+def api_commands():
+    if not _current_plugin:
+        return jsonify({"commands": []})
+    try:
+        return jsonify({"commands": _parse_commands(PLUGINS_DIR / _current_plugin)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 # ==================== 主流程 ====================
 
@@ -906,6 +1105,7 @@ def main() -> None:
     log_buffer.add(f"[启动] 配置：{CONFIG_FILE}")
     log_buffer.add(f"[启动] 前端：{WEB_DIR}")
     log_buffer.add(f"[启动] 插件目录：{PLUGINS_DIR}")
+    log_buffer.add(f"[启动] 日志目录：{LOG_DIR}（backend / frontend 按天自动写入）")
 
     # 1. 启动 asyncio loop（子线程）
     threading.Thread(target=_start_asyncio_loop, daemon=True).start()
